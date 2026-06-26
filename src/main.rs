@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -108,6 +109,23 @@ fn inspect_h264(input_path: &Path) -> Result<(), Box<dyn Error>> {
         println!("first nal type: {nal_type}");
     }
 
+    let nal_headers = find_nal_headers(&bytes);
+    println!("NAL units:");
+    for (index, nal_header) in nal_headers.iter().enumerate() {
+        let nal_type = nal_header & 0x1f;
+        let name = nal_type_name(nal_type);
+        println!("{index}: header 0x{nal_header:02x}, type {nal_type} {name}");
+    }
+
+    println!("NAL summary:");
+    let summary = count_header(&nal_headers);
+    println!("{summary:?}");
+    for (nal, count) in summary.into_iter() {
+        let nal_type = nal & 0x1f;
+        let name = nal_type_name(nal_type);
+        println!("{name}: {count}");
+    }
+
     Ok(())
 }
 
@@ -138,6 +156,15 @@ fn first_nal_header_after_start_code(bytes: &[u8]) -> Option<u8> {
     None
 }
 
+fn count_header(bytes: &[u8]) -> HashMap<u8, usize> {
+    let mut res = HashMap::new();
+    for byte in bytes.iter() {
+        let entry = res.entry(*byte).or_default();
+        *entry += 1;
+    }
+    res
+}
+
 fn nal_type_name(nal_type: u8) -> &'static str {
     match nal_type {
         1 => "non-IDR slice",
@@ -147,6 +174,32 @@ fn nal_type_name(nal_type: u8) -> &'static str {
         8 => "PPS",
         _ => "unknown",
     }
+}
+
+fn find_nal_headers(bytes: &[u8]) -> Vec<u8> {
+    let len = bytes.len();
+    let mut index = 0;
+    let mut res = vec![];
+    while index + 3 < len {
+        if index + 4 < len {
+            if bytes[index..index + 4] == [0x00, 0x00, 0x00, 0x01] {
+                if let Some(nal) = bytes.get(index + 4).copied() {
+                    res.push(nal);
+                }
+                index += 5;
+                continue;
+            }
+        }
+        if bytes[index..index + 3] == [0x00, 0x00, 0x01] {
+            if let Some(nal) = bytes.get(index + 3).copied() {
+                res.push(nal);
+            }
+            index += 4;
+        } else {
+            index += 1;
+        }
+    }
+    res
 }
 
 #[cfg(test)]
@@ -159,6 +212,16 @@ mod tests {
         assert_eq!(nal_type_name(8), "PPS");
         assert_eq!(nal_type_name(5), "IDR slice");
         assert_eq!(nal_type_name(1), "non-IDR slice");
+    }
+
+    #[test]
+    fn finds_multiple_nal_headers_after_start_codes() {
+        let bytes = [
+            0x00, 0x00, 0x00, 0x01, 0x67, 0xaa, 0xbb, 0x00, 0x00, 0x01, 0x68, 0xcc, 0x00, 0x00,
+            0x01, 0x65,
+        ];
+
+        assert_eq!(find_nal_headers(&bytes), vec![0x67, 0x68, 0x65]);
     }
 
     #[test]
