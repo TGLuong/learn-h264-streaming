@@ -5,10 +5,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use crate::rtp_packetization::find_nal_units_annex_b;
+
+pub mod rtp_packetization;
+
 #[derive(Debug, PartialEq, Eq)]
 enum CliCommand {
     CaptureH264 { output_path: PathBuf },
     Inspect { input_path: PathBuf },
+    Packetize { input_path: PathBuf },
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -33,7 +38,15 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
     match parse_cli(args)? {
         CliCommand::CaptureH264 { output_path } => capture_h264(&output_path),
         CliCommand::Inspect { input_path } => inspect_h264(&input_path),
+        CliCommand::Packetize { input_path } => packetize(&input_path),
     }
+}
+
+fn packetize(input_path: &Path) -> Result<(), Box<dyn Error>> {
+    let bytes = fs::read(input_path)?;
+    let packets = find_nal_units_annex_b(&bytes);
+    println!("{packets:?}");
+    Ok(())
 }
 
 fn parse_cli(args: Vec<String>) -> Result<CliCommand, String> {
@@ -42,6 +55,9 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, String> {
             output_path: output_path.into(),
         }),
         [_, command, input_path] if command == "inspect" => Ok(CliCommand::Inspect {
+              input_path: input_path.into(),
+        }),
+        [_, command, input_path] if command == "packetize" => Ok(CliCommand::Packetize {
               input_path: input_path.into(),
         }),
         [program, ..] => Err(format!(
