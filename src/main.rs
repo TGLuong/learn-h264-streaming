@@ -11,6 +11,14 @@ enum CliCommand {
     Inspect { input_path: PathBuf },
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct GopSummary {
+    sps_before_idr: bool,
+    pps_before_idr: bool,
+    idr_slices: usize,
+    non_idr_slices: usize,
+}
+
 fn main() -> ExitCode {
     match run(env::args().collect()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -126,6 +134,16 @@ fn inspect_h264(input_path: &Path) -> Result<(), Box<dyn Error>> {
         println!("{name}: {count}");
     }
 
+    let gops = summarize_gops(&nal_headers);
+
+    println!("GOP summary:");
+    for (index, gop) in gops.iter().enumerate() {
+        println!(
+            "GOP {index}: SPS before IDR: {}, PPS before IDR: {}, IDR slices: {}, non-IDR slices: {}",
+            gop.sps_before_idr, gop.pps_before_idr, gop.idr_slices, gop.non_idr_slices,
+        );
+    }
+
     Ok(())
 }
 
@@ -162,6 +180,85 @@ fn count_header(bytes: &[u8]) -> HashMap<u8, usize> {
         let entry = res.entry(*byte).or_default();
         *entry += 1;
     }
+    res
+}
+
+enum State {
+    None,
+    SPS,
+    PPS,
+    IDR,
+    NonIDR,
+}
+
+fn summarize_gops(bytes: &[u8]) -> Vec<GopSummary> {
+    let mut current = GopSummary::default();
+    let mut state = State::None;
+    let mut res = vec![];
+    for byte in bytes.iter() {
+        let nal_type = byte & 0x1f;
+        match nal_type {
+            7 => match state {
+                State::None => {
+                    current.sps_before_idr = true;
+                    state = State::SPS;
+                }
+                State::NonIDR => {
+                    res.push(current.clone());
+                    current = GopSummary::default();
+                    current.sps_before_idr = true;
+                    state = State::SPS;
+                }
+                _ => {}
+            },
+            8 => match state {
+                State::SPS => {
+                    current.pps_before_idr = true;
+                    state = State::PPS;
+                }
+                State::NonIDR => {
+                    res.push(current.clone());
+                    current = GopSummary::default();
+                    current.sps_before_idr = false;
+                    current.pps_before_idr = true;
+                    state = State::PPS;
+                }
+                _ => {}
+            },
+            5 => match state {
+                State::PPS => {
+                    current.idr_slices += 1;
+                    state = State::IDR;
+                }
+                State::IDR => {
+                    current.idr_slices += 1;
+                }
+                State::NonIDR => {
+                    res.push(current.clone());
+                    current = GopSummary::default();
+                    current.sps_before_idr = false;
+                    current.pps_before_idr = false;
+                    current.idr_slices += 1;
+                    state = State::IDR;
+                }
+                _ => {}
+            },
+            1 => match state {
+                State::IDR => {
+                    current.non_idr_slices += 1;
+                    state = State::NonIDR;
+                }
+                State::NonIDR => {
+                    current.non_idr_slices += 1;
+                    state = State::NonIDR;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+    res.push(current);
+
     res
 }
 
@@ -205,6 +302,31 @@ fn find_nal_headers(bytes: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summarizes_gops_from_idr_clusters() {
+        let nal_headers = vec![
+            0x67, 0x68, 0x65, 0x65, 0x41, 0x41, 0x67, 0x68, 0x65, 0x65, 0x65, 0x41,
+        ];
+
+        assert_eq!(
+            summarize_gops(&nal_headers),
+            vec![
+                GopSummary {
+                    sps_before_idr: true,
+                    pps_before_idr: true,
+                    idr_slices: 2,
+                    non_idr_slices: 2,
+                },
+                GopSummary {
+                    sps_before_idr: true,
+                    pps_before_idr: true,
+                    idr_slices: 3,
+                    non_idr_slices: 1,
+                },
+            ]
+        );
+    }
 
     #[test]
     fn names_common_h264_nal_types() {
