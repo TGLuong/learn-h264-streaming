@@ -19,15 +19,15 @@ Learn how to capture camera video, understand the H.264 bitstream structure, and
 - [x] Stage 3: Inspect raw H.264 Annex B bitstream structure.
 - [x] Stage 4: Build a Rust H.264 inspector for NAL units and GOP summaries.
 - [x] Stage 5: Understand raw H.264 stream vs MP4 container and Annex B vs AVCC.
-- [ ] Stage 6: Learn H.264 over RTP packetization.
-- [ ] Stage 7: Implement simple H.264 NAL unit extraction for RTP payloading.
+- [x] Stage 6: Learn H.264 over RTP packetization.
+- [x] Stage 7: Implement simple H.264 NAL unit extraction for RTP payloading.
 - [ ] Stage 8: Implement RTP packetization for Single NAL and FU-A.
 - [ ] Stage 9: Learn low-latency streaming considerations.
 - [ ] Stage 10: Optional capture/encoding internals: raw frames, pixel formats, and native macOS APIs.
 
 ## Next Session Prompt
 
-Continue from Stage 6 in `docs/superpowers/plans/2026-06-24-learn-camera-h264.md`. Explain H.264 over RTP packetization in Vietnamese, then guide me to extract full Annex B NAL unit byte ranges from the existing `.h264` file.
+Continue from Stage 8 Step 4 in `docs/superpowers/plans/2026-06-24-learn-camera-h264.md`. The learner has implemented Annex B NAL extraction, Single NAL RTP packetization, and FU-A fragmentation. Next, guide them to verify packetization on the real `captures/rust-camera-g30.h264` file by printing concise per-NAL RTP summaries.
 
 ## Notes
 
@@ -87,3 +87,24 @@ Continue from Stage 6 in `docs/superpowers/plans/2026-06-24-learn-camera-h264.md
 - Compared Annex B vs AVCC:
   - Annex B raw H.264 starts NAL units with start codes such as `00 00 00 01`.
   - MP4 stores H.264 samples with length prefixes such as `00 00 00 16`.
+
+## Notes From H.264 over RTP Study
+
+- Learned that RTP payloading starts from NAL unit bytes, not Annex B start codes.
+- Implemented `find_nal_units_annex_b(bytes: &[u8]) -> Vec<&[u8]>` in `src/rtp_packetization.rs`.
+- Learned that if `payload[0] & 0x1f` is in `1..=23`, the RTP payload is a Single NAL Unit packet.
+- Learned that if `payload[0] & 0x1f == 28`, the RTP payload is FU-A.
+- Implemented a learning-oriented `RtpPacket` struct.
+- Implemented Single NAL packetization: small NAL units become one RTP packet whose payload is the original NAL bytes.
+- Implemented FU-A fragmentation for large NAL units.
+- Learned FU-A payload structure:
+  - FU indicator: keeps original F/NRI bits and uses NAL type 28.
+  - FU header: stores Start/End flags and the original NAL type.
+- Added tests for:
+  - Annex B NAL extraction without start codes.
+  - Single NAL RTP packetization.
+  - FU-A fragmentation.
+  - Exact final FU-A chunk handling.
+- Current next step: verify RTP packetization on a real `.h264` file by printing concise summaries such as:
+  - `NAL 0 type 7 SPS len 22 -> Single RTP packet seq=100`
+  - `NAL 3 type 5 IDR len 50350 -> FU-A packets seq=103..145`

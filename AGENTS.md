@@ -30,22 +30,30 @@ Completed:
 - Raw `.h264` vs MP4 container comparison.
 - Annex B vs AVCC comparison.
 - Basic mux/demux/remux terminology.
+- H.264 over RTP concepts: Single NAL packets vs FU-A fragmentation.
+- Full Annex B NAL unit extraction for RTP payloading.
+- Learning-oriented RTP packet model.
+- Single NAL RTP packetization.
+- FU-A packetization with tests for normal fragmentation and exact final chunk handling.
 
 Current next stage:
 
-- Stage 6: H.264 over RTP packetization.
+- Stage 8 Step 4: verify RTP packetization using a real `.h264` file.
 
 Recommended next lesson:
 
-1. Explain H.264 over RTP at a high level.
-2. Emphasize that RTP payloading starts from NAL unit bytes, not Annex B start codes.
-3. Guide the learner to implement full Annex B NAL unit extraction:
+1. Read `src/rtp_packetization.rs`.
+2. Check whether the debug `println!("{packets:?}")` in the FU-A test is still present; recommend removing it if the learner asks for cleanup.
+3. Guide the learner to add an inspect/summary path that reads `captures/rust-camera-g30.h264`, extracts NAL units, packetizes the first few NAL units with MTU 1200, and prints concise summaries:
 
-```rust
-fn find_nal_units_annex_b(bytes: &[u8]) -> Vec<&[u8]>
+```text
+NAL 0 type 7 SPS len 22 -> Single RTP packet seq=100
+NAL 1 type 8 PPS len 4 -> Single RTP packet seq=101
+NAL 2 type 6 SEI len 690 -> Single RTP packet seq=102
+NAL 3 type 5 IDR len 50350 -> FU-A packets seq=103..145
 ```
 
-Each returned slice should start with the NAL header byte and exclude the Annex B start code.
+4. After this verification step, the next conceptual step is receiver-side depacketization/reconstruction.
 
 ## Teaching Style
 
@@ -106,12 +114,18 @@ The learner currently understands:
 - Multiple slices can form one frame.
 - A simple GOP can be viewed as an IDR frame candidate plus following non-IDR frames.
 - `-g 30` at about 30fps creates roughly 1-second GOPs.
+- RTP payloading uses NAL unit bytes and does not include Annex B start codes.
+- Single NAL RTP packet payload is the original NAL bytes.
+- FU-A splits a large NAL across multiple RTP packets.
+- FU indicator keeps F/NRI and sets type 28.
+- FU header stores Start/End flags and original NAL type.
+- Marker bit means the last RTP packet of an access unit/frame, not "this NAL fits in one packet".
 
 The next conceptual bridge is:
 
 ```text
 Annex B H.264 stream
   -> full NAL unit byte ranges
-  -> RTP H.264 payloader
-  -> Single NAL Unit packets or FU-A fragmented packets
+  -> RTP H.264 payloader summaries on real data
+  -> receiver-side depacketization/reconstruction
 ```
