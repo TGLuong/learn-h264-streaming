@@ -1,0 +1,238 @@
+use std::env;
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+
+#[derive(Debug, PartialEq, Eq)]
+enum CliCommand {
+    CaptureH264 { output_path: PathBuf },
+    Inspect { input_path: PathBuf },
+}
+
+fn main() -> ExitCode {
+    match run(env::args().collect()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
+    match parse_cli(args)? {
+        CliCommand::CaptureH264 { output_path } => capture_h264(&output_path),
+        CliCommand::Inspect { input_path } => inspect_h264(&input_path),
+    }
+}
+
+fn parse_cli(args: Vec<String>) -> Result<CliCommand, String> {
+    match args.as_slice() {
+        [_, command, output_path] if command == "capture-h264" => Ok(CliCommand::CaptureH264 {
+            output_path: output_path.into(),
+        }),
+        [_, command, input_path] if command == "inspect" => Ok(CliCommand::Inspect {
+              input_path: input_path.into(),
+        }),
+        [program, ..] => Err(format!(
+            "Usage: {program} capture-h264 <output-path>\nExample: {program} capture-h264 captures/rust-camera.h264"
+        )),
+        [] => Err(
+            "Usage: video-capture capture-h264 <output-path>\nExample: video-capture capture-h264 captures/rust-camera.h264"
+                .to_string(),
+        ),
+    }
+}
+
+fn capture_h264(output_path: &Path) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let output = output_path
+        .to_str()
+        .ok_or("output path must be valid UTF-8")?;
+    let status = Command::new("ffmpeg")
+        .args(build_ffmpeg_capture_args(output))
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("ffmpeg exited with status {status}").into())
+    }
+}
+
+fn build_ffmpeg_capture_args(output_path: &str) -> Vec<&str> {
+    vec![
+        "-f",
+        "avfoundation",
+        "-framerate",
+        "30",
+        "-video_size",
+        "1280x720",
+        "-i",
+        "0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+        "-f",
+        "h264",
+        output_path,
+    ]
+}
+
+fn inspect_h264(input_path: &Path) -> Result<(), Box<dyn Error>> {
+    let bytes = fs::read(input_path)?;
+    let preview_len = bytes.len().min(64);
+    let preview = &bytes[..preview_len];
+
+    println!("first {preview_len} bytes: ");
+    println!("{}", format_hex(preview));
+
+    if contains_annex_b_start_code(&bytes) {
+        println!("Found Annex B start code");
+    } else {
+        println!("No Annex B start code found in preview");
+    }
+
+    if let Some(nal_header) = first_nal_header_after_start_code(&bytes) {
+        let nal_type = nal_header & 0x1f;
+        println!("first nal header: 0x{nal_header:02x}");
+        println!("first nal type: {nal_type}");
+    }
+
+    Ok(())
+}
+
+fn format_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn contains_annex_b_start_code(bytes: &[u8]) -> bool {
+    bytes
+        .windows(4)
+        .any(|window| window == [0x00, 0x00, 0x00, 0x01])
+        || bytes.windows(3).any(|window| window == [0x00, 0x00, 0x01])
+}
+
+fn first_nal_header_after_start_code(bytes: &[u8]) -> Option<u8> {
+    for index in 0..bytes.len() {
+        if bytes[index..].starts_with(&[0x00, 0x00, 0x00, 0x01]) {
+            return bytes.get(index + 4).copied();
+        }
+        if bytes[index..].starts_with(&[0x00, 0x00, 0x01]) {
+            return bytes.get(index + 3).copied();
+        }
+    }
+    None
+}
+
+fn nal_type_name(nal_type: u8) -> &'static str {
+    match nal_type {
+        1 => "non-IDR slice",
+        5 => "IDR slice",
+        6 => "SEI",
+        7 => "SPS",
+        8 => "PPS",
+        _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_common_h264_nal_types() {
+        assert_eq!(nal_type_name(7), "SPS");
+        assert_eq!(nal_type_name(8), "PPS");
+        assert_eq!(nal_type_name(5), "IDR slice");
+        assert_eq!(nal_type_name(1), "non-IDR slice");
+    }
+
+    #[test]
+    fn parse_inspect_command() {
+        let args = vec![
+            "video-capture".to_string(),
+            "inspect".to_string(),
+            "capture/rust-camera.h264".to_string(),
+        ];
+        let command = parse_cli(args).expect("command should parse");
+        assert_eq!(
+            command,
+            CliCommand::Inspect {
+                input_path: "capture/rust-camera.h264".into()
+            }
+        );
+    }
+
+    #[test]
+    fn detects_annex_b_start_code() {
+        let bytes = [0x12, 0x00, 0x00, 0x00, 0x01, 0x67];
+        assert!(contains_annex_b_start_code(&bytes));
+    }
+
+    #[test]
+    fn finds_first_nal_header_after_start_code() {
+        let bytes = [0x00, 0x00, 0x00, 0x01, 0x67, 0x64];
+
+        assert_eq!(first_nal_header_after_start_code(&bytes), Some(0x67));
+    }
+
+    #[test]
+    fn parses_capture_h264_command() {
+        let args = vec![
+            "video-capture".to_string(),
+            "capture-h264".to_string(),
+            "captures/rust-camera.h264".to_string(),
+        ];
+
+        let command = parse_cli(args).expect("command should parse");
+
+        assert_eq!(
+            command,
+            CliCommand::CaptureH264 {
+                output_path: "captures/rust-camera.h264".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn builds_avfoundation_x264_args_for_output_path() {
+        let args = build_ffmpeg_capture_args("captures/rust-camera.h264");
+
+        assert_eq!(
+            args,
+            vec![
+                "-f",
+                "avfoundation",
+                "-framerate",
+                "30",
+                "-video_size",
+                "1280x720",
+                "-i",
+                "0",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-tune",
+                "zerolatency",
+                "-f",
+                "h264",
+                "captures/rust-camera.h264",
+            ]
+        );
+    }
+}
