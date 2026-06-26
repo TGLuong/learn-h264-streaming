@@ -1,34 +1,33 @@
 # Learning Progress: Camera Capture to H.264
 
-Last updated: 2026-06-24
+Last updated: 2026-06-26
 
 ## Goal
 
-Learn how to capture video from a camera and convert it into an H.264 bitstream, using this Rust repo as the practice workspace.
+Learn how to capture camera video, understand the H.264 bitstream structure, and eventually packetize H.264 for real-time transport such as RTP.
 
 ## Current Level
 
-- Starting point.
-- Repo currently contains a minimal Rust binary:
-  - `Cargo.toml`
-  - `src/main.rs`
-- No capture or encoding implementation has been added yet.
+- Can capture camera video to raw H.264 by launching FFmpeg from Rust.
+- Can inspect raw H.264 Annex B streams with a Rust inspector.
+- Current learning focus: understand H.264 stream structure and H.264 over RTP packetization before going deeper into raw camera frame capture.
 
 ## Learning Path Status
 
 - [x] Stage 1: Understand the video pipeline concepts.
 - [x] Stage 2: Use FFmpeg CLI to capture and encode camera video.
-- [x] Stage 3: Inspect raw H.264 bitstream structure.
-- [ ] Stage 4: Capture frames in Rust.
-- [ ] Stage 5: Convert camera frames to encoder-friendly pixel format.
-- [ ] Stage 6: Encode frames to H.264 from Rust.
-- [ ] Stage 7: Write raw `.h264` output and verify playback.
-- [ ] Stage 8: Learn low-latency streaming considerations.
-- [ ] Stage 9: Optional macOS native path: AVFoundation + VideoToolbox.
+- [x] Stage 3: Inspect raw H.264 Annex B bitstream structure.
+- [x] Stage 4: Build a Rust H.264 inspector for NAL units and GOP summaries.
+- [x] Stage 5: Understand raw H.264 stream vs MP4 container and Annex B vs AVCC.
+- [ ] Stage 6: Learn H.264 over RTP packetization.
+- [ ] Stage 7: Implement simple H.264 NAL unit extraction for RTP payloading.
+- [ ] Stage 8: Implement RTP packetization for Single NAL and FU-A.
+- [ ] Stage 9: Learn low-latency streaming considerations.
+- [ ] Stage 10: Optional capture/encoding internals: raw frames, pixel formats, and native macOS APIs.
 
 ## Next Session Prompt
 
-Continue from Stage 1 in `docs/superpowers/plans/2026-06-24-learn-camera-h264.md`. Start by explaining the camera-to-H.264 pipeline and then give me the first hands-on exercise.
+Continue from Stage 6 in `docs/superpowers/plans/2026-06-24-learn-camera-h264.md`. Explain H.264 over RTP packetization in Vietnamese, then guide me to extract full Annex B NAL unit byte ranges from the existing `.h264` file.
 
 ## Notes
 
@@ -36,6 +35,7 @@ Continue from Stage 1 in `docs/superpowers/plans/2026-06-24-learn-camera-h264.md
 - Preferred style: step-by-step, hands-on, with short theory before each exercise.
 - Target platform right now: macOS, based on the current workspace environment.
 - Main objective: understand the concepts first, then implement a Rust prototype.
+- Current priority: understand H.264 stream structure and RTP packetization. Raw frame capture and pixel conversion are deferred until after the H.264/RTP path is clear.
 
 ## Notes From Stage 1
 
@@ -73,3 +73,17 @@ Continue from Stage 1 in `docs/superpowers/plans/2026-06-24-learn-camera-h264.md
   - Run `cargo run -- capture-h264 captures/rust-camera.h264`.
   - Stop FFmpeg with `q` after a few seconds.
   - Run `ffplay captures/rust-camera.h264`.
+
+## Notes From H.264 Stream Study
+
+- Added Rust inspector logic to find Annex B start codes and NAL headers.
+- Learned that `nal_header & 0x1f` gives the H.264 NAL unit type.
+- Identified SPS (`0x67`, type 7), PPS (`0x68`, type 8), SEI (`0x06`, type 6), IDR slices (`0x65`, type 5), and non-IDR slices (`0x41`, type 1).
+- Learned that one frame can contain multiple slices, so IDR slice count is not the same as keyframe count.
+- Built GOP summaries by grouping IDR slice clusters and following non-IDR slices.
+- Observed x264 default GOP interval around 250 frames, about 8.3 seconds at 30fps.
+- Added `-g 30`, `-keyint_min 30`, and `-sc_threshold 0` to observe 30-frame GOPs, about 1 second at 30fps.
+- Compared raw `.h264` and `.mp4`: raw H.264 lacks container duration/bitrate metadata, while MP4 adds timeline, track metadata, and index information.
+- Compared Annex B vs AVCC:
+  - Annex B raw H.264 starts NAL units with start codes such as `00 00 00 01`.
+  - MP4 stores H.264 samples with length prefixes such as `00 00 00 16`.

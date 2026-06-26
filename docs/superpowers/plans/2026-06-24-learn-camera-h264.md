@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Teach camera capture to H.264 bitstream step by step, ending with a Rust prototype that writes playable H.264 output.
+**Goal:** Teach camera capture, H.264 bitstream structure, and H.264 packetization step by step, ending with Rust prototypes that can inspect raw H.264 and prepare H.264 NAL units for RTP transport.
 
-**Architecture:** Learn the pipeline in layers: first observe it with FFmpeg CLI, then inspect the H.264 output, then implement capture and encoding in Rust. Keep each milestone independently testable so the learner can verify understanding before moving on.
+**Architecture:** Learn the pipeline in layers: first observe it with FFmpeg CLI, then inspect the H.264 output, then understand containers and RTP packetization, then implement capture and encoding internals in Rust. Keep each milestone independently testable so the learner can verify understanding before moving on.
 
-**Tech Stack:** Rust, FFmpeg CLI, H.264/AVC concepts, camera capture APIs, optional macOS AVFoundation and VideoToolbox later.
+**Tech Stack:** Rust, FFmpeg CLI, H.264/AVC concepts, RTP packetization concepts, camera capture APIs, optional macOS AVFoundation and VideoToolbox later.
 
 ---
 
@@ -147,11 +147,301 @@ Type 1: non-IDR video slice
 
 Expected result: you can explain why a decoder needs SPS and PPS before decoding video frames.
 
-## Stage 4: Capture Frames in Rust
+## Stage 4: Build a Rust H.264 Inspector
+
+**Objective:** Move from inspecting H.264 with CLI tools to reading H.264 stream structure from Rust.
+
+- [ ] **Step 1: Parse Annex B start codes**
+
+Implement helpers that recognize both Annex B start code forms:
+
+```text
+00 00 00 01
+00 00 01
+```
+
+Expected result: Rust can detect NAL unit boundaries in a raw `.h264` file.
+
+- [ ] **Step 2: Extract NAL headers and NAL types**
+
+For each NAL unit, read the first byte after the start code:
+
+```text
+nal_type = nal_header & 0x1f
+```
+
+Learn common NAL types:
+
+```text
+1: non-IDR slice
+5: IDR slice
+6: SEI
+7: SPS
+8: PPS
+```
+
+Expected result: Rust can print NAL unit type summaries.
+
+- [ ] **Step 3: Understand slice vs frame**
+
+Study the fact that one frame can contain multiple slices:
+
+```text
+IDR slice count != keyframe count
+non-IDR slice count != frame count
+```
+
+Expected result: the learner can explain why 10 IDR slices may represent one IDR frame.
+
+- [ ] **Step 4: Summarize GOPs**
+
+Group consecutive IDR slices and following non-IDR slices into simple GOP summaries:
+
+```text
+GOP 0: IDR slices: 10, non-IDR slices: 2490
+GOP 1: IDR slices: 10, non-IDR slices: 2490
+```
+
+Expected result: the learner can relate GOP size, keyframe interval, framerate, and low-latency settings.
+
+- [ ] **Step 5: Experiment with keyframe interval**
+
+Add x264 GOP controls:
+
+```text
+-g 30
+-keyint_min 30
+-sc_threshold 0
+```
+
+Expected result: the learner observes GOPs shrink from about 250 frames to about 30 frames at 30fps.
+
+## Stage 5: Raw H.264 Stream vs Container
+
+**Objective:** Understand that raw `.h264` is an elementary stream, while MP4 is a container with timing, metadata, and different H.264 framing.
+
+- [ ] **Step 1: Compare raw H.264 and MP4 with FFprobe**
+
+Remux raw H.264 to MP4:
+
+```bash
+ffmpeg -framerate 30 -i captures/rust-camera-g30.h264 -c copy captures/rust-camera-g30.mp4
+```
+
+Then compare:
+
+```bash
+ffprobe -hide_banner captures/rust-camera-g30.h264
+ffprobe -hide_banner captures/rust-camera-g30.mp4
+```
+
+Expected result: raw `.h264` has limited timing/container metadata, while MP4 has duration, track metadata, bitrate, and a timeline.
+
+- [ ] **Step 2: Learn Annex B vs AVCC**
+
+Compare first packet bytes:
+
+```text
+Annex B raw .h264:
+00 00 00 01 67 ...
+
+AVCC inside MP4:
+00 00 00 16 67 ...
+```
+
+Expected result: the learner can explain that Annex B uses start codes, while AVCC uses length prefixes.
+
+- [ ] **Step 3: Learn mux, demux, and remux**
+
+Definitions:
+
+```text
+encode: raw frames -> compressed bitstream
+mux: one or more streams -> container
+demux: container -> elementary streams
+remux: change container/framing without re-encoding
+```
+
+Expected result: the learner can explain why `-c copy` remuxes instead of re-encoding.
+
+## Stage 6: H.264 over RTP Concepts
+
+**Objective:** Understand how H.264 NAL units are packetized for RTP transport.
+
+- [ ] **Step 1: Learn the H.264-to-RTP pipeline**
+
+Study this pipeline:
+
+```text
+H.264 Annex B or AVCC stream
+  -> extract NAL units
+  -> remove Annex B start codes or AVCC length prefixes
+  -> RTP H.264 payloader
+  -> RTP packets over UDP
+```
+
+Expected result: the learner can explain why RTP packets contain NAL payload bytes, not Annex B start codes.
+
+- [ ] **Step 2: Learn RTP packet fields**
+
+Important RTP header fields:
+
+```text
+payload type
+sequence number
+timestamp
+marker bit
+SSRC
+payload bytes
+```
+
+Expected result: the learner understands the difference between H.264 payload bytes and RTP metadata.
+
+- [ ] **Step 3: Learn H.264 RTP packetization modes**
+
+Focus first on:
+
+```text
+Single NAL Unit Packet: one small NAL in one RTP packet
+FU-A: one large NAL fragmented across multiple RTP packets
+```
+
+Learn later:
+
+```text
+STAP-A: multiple small NAL units aggregated into one RTP packet
+```
+
+Expected result: the learner can explain when a NAL can be sent directly and when it must be fragmented.
+
+## Stage 7: Extract Full NAL Units for RTP Payloading
+
+**Objective:** Upgrade the Rust inspector from "NAL headers only" to full NAL unit byte ranges.
+
+- [ ] **Step 1: Extract Annex B NAL unit bytes**
+
+Implement:
+
+```rust
+fn find_nal_units_annex_b(bytes: &[u8]) -> Vec<&[u8]>
+```
+
+Each returned NAL unit should start with the NAL header byte:
+
+```text
+0x67 ... = SPS NAL unit bytes
+0x68 ... = PPS NAL unit bytes
+0x65 ... = IDR slice NAL unit bytes
+```
+
+Do not include Annex B start codes in returned slices.
+
+Expected result: Rust can report NAL type and NAL payload length.
+
+- [ ] **Step 2: Compare extracted NAL lengths with MP4 AVCC length prefixes**
+
+Use the observed MP4 length prefix, such as:
+
+```text
+00 00 00 16 67 ...
+```
+
+Expected result: the learner understands that RTP payloading starts from NAL unit bytes, regardless of whether source framing was Annex B or AVCC.
+
+## Stage 8: Packetize H.264 NAL Units into RTP Packets
+
+**Objective:** Implement a learning-oriented RTP H.264 payloader for Single NAL and FU-A packets.
+
+- [ ] **Step 1: Define a simple RTP packet model**
+
+Fields:
+
+```text
+sequence_number
+timestamp
+marker
+payload_type
+ssrc
+payload
+```
+
+Expected result: Rust can construct inspectable RTP packet structs without sending network traffic yet.
+
+- [ ] **Step 2: Implement Single NAL Unit packetization**
+
+If a NAL unit is small enough for the chosen MTU, put the whole NAL unit into one RTP payload.
+
+Expected result: SPS/PPS and small NAL units can become one RTP packet each.
+
+- [ ] **Step 3: Implement FU-A fragmentation**
+
+If a NAL unit is too large, fragment it into FU-A packets.
+
+Learn FU-A fields:
+
+```text
+FU indicator
+FU header
+Start bit
+End bit
+original NAL type
+```
+
+Expected result: large IDR/non-IDR slices can be split across multiple RTP packets.
+
+- [ ] **Step 4: Verify packetization with printed summaries**
+
+Print examples:
+
+```text
+NAL type 7 SPS -> Single RTP packet
+NAL type 5 IDR slice, 50350 bytes -> FU-A packets 1..N
+```
+
+Expected result: the learner can explain how H.264 byte boundaries map to RTP packet boundaries.
+
+## Stage 9: Low-Latency Streaming Concepts
+
+**Objective:** Understand settings used for real-time capture and packet transport.
+
+- [ ] **Step 1: Learn encoder knobs**
+
+Study:
+
+```text
+preset ultrafast
+tune zerolatency
+bitrate
+GOP/keyframe interval
+B-frames disabled
+VBV buffer size
+Annex B output
+SPS/PPS repeat before keyframes
+packet MTU
+RTP timestamp clock rate
+```
+
+- [ ] **Step 2: Learn transport options**
+
+Compare:
+
+```text
+Raw H.264 over TCP: simple, custom framing needed
+RTP: common for real-time media
+RTMP: common for ingest
+WebRTC: browser-friendly, more complex
+MPEG-TS: practical streaming container
+```
+
+Expected result: you know why "encode H.264", "packetize H.264", and "stream video" are related but separate problems.
+
+## Stage 10: Optional Capture and Encoding Internals
+
+**Objective:** Return to camera frames, pixel conversion, and lower-level encoders after the H.264/RTP path is clear.
+
+### Stage 10A: Capture Frames in Rust
 
 **Objective:** Write a Rust program that opens the camera and receives frames.
-
-- [ ] **Step 1: Choose first capture approach**
 
 Recommended first path:
 
@@ -160,34 +450,9 @@ Use FFmpeg or GStreamer from Rust if the goal is to learn the full pipeline quic
 Use a Rust camera crate or native API later if the goal is low-level control.
 ```
 
-For this repo, start simple:
+Expected result: the learner understands the difference between wrapping FFmpeg and receiving raw camera frames in Rust.
 
-```text
-Rust launches or wraps a known-good capture pipeline, then later moves lower-level.
-```
-
-- [ ] **Step 2: Add a small Rust command structure**
-
-Planned commands:
-
-```text
-cargo run -- capture-h264 captures/rust-camera.h264
-cargo run -- inspect captures/rust-camera.h264
-```
-
-Expected result: the app has obvious learning-oriented commands.
-
-- [ ] **Step 3: Verify output**
-
-Run:
-
-```bash
-ffplay captures/rust-camera.h264
-```
-
-Expected result: playback works.
-
-## Stage 5: Pixel Format Conversion
+### Stage 10B: Pixel Format Conversion
 
 **Objective:** Understand why captured frames often need conversion before encoding.
 
@@ -216,7 +481,7 @@ MJPEG -> decode to raw frame -> convert -> H.264 encoder
 
 Expected result: you know that "camera frame" and "encoder input frame" may be different formats.
 
-## Stage 6: Encode H.264 from Rust
+### Stage 10C: Encode H.264 from Rust
 
 **Objective:** Move from shelling out to a pipeline toward controlling encode from Rust.
 
@@ -260,7 +525,7 @@ camera frame
 
 Expected result: `captures/rust-camera.h264` can be played by FFplay.
 
-## Stage 7: Verify and Debug Output
+### Stage 10D: Verify and Debug Output
 
 **Objective:** Learn how to tell whether problems are from capture, conversion, encoding, or container/bitstream format.
 
@@ -296,40 +561,7 @@ Huge latency: encoder B-frames, buffering, or non-low-latency settings.
 File only opens in ffplay: raw .h264 has no container metadata.
 ```
 
-## Stage 8: Low-Latency Streaming Concepts
-
-**Objective:** Understand settings used for real-time capture.
-
-- [ ] **Step 1: Learn encoder knobs**
-
-Study:
-
-```text
-preset ultrafast
-tune zerolatency
-bitrate
-GOP/keyframe interval
-B-frames disabled
-VBV buffer size
-Annex B output
-SPS/PPS repeat before keyframes
-```
-
-- [ ] **Step 2: Learn transport options**
-
-Compare:
-
-```text
-Raw H.264 over TCP: simple, custom framing needed
-RTP: common for real-time media
-RTMP: common for ingest
-WebRTC: browser-friendly, more complex
-MPEG-TS: practical streaming container
-```
-
-Expected result: you know why "encode H.264" and "stream video" are related but separate problems.
-
-## Stage 9: Optional macOS Native Path
+### Stage 10E: Optional macOS Native Path
 
 **Objective:** Learn the production-style macOS path after the basics are clear.
 
