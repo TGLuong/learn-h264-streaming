@@ -8,6 +8,32 @@ pub struct RtpPacket {
     pub payload: Vec<u8>,
 }
 
+pub fn reconstruct_fu_a_payloads(payload: &Vec<Vec<u8>>) -> Vec<u8> {
+    let mut res = vec![];
+    for packet in payload.iter() {
+        if let (Some(fu_indicator), Some(fu_header), Some(nal_payload)) =
+            (packet.get(0), packet.get(1), packet.get(2..))
+        {
+            let fu_type = fu_indicator & 0x1f;
+            let start = (fu_header & 0x80) >> 7;
+            let end = (fu_header & 0x40) >> 6;
+
+            println!("{fu_indicator:02x} {fu_header:02x} {fu_type} {start} {end}");
+            if fu_type == 28 {
+                let nal_header = (fu_indicator & 0xe0) | (fu_header & 0x1f);
+                if start == 1 {
+                    res.push(nal_header);
+                }
+                res.extend(nal_payload);
+                if end == 1 {
+                    return res;
+                }
+            }
+        }
+    }
+    res
+}
+
 pub fn packetize_nal_as_rtp(
     nal: &[u8],
     mtu: usize,
@@ -249,5 +275,17 @@ mod test {
 
         assert_eq!(packets[1].payload, vec![0x7c, 0x45, 0xdd, 0xee, 0xff]);
         assert_eq!(packets[1].marker, true);
+    }
+
+    #[test]
+    fn reconstructs_fu_a_payloads_as_original_nal_unit() {
+        let fu_a_payloads = vec![
+            vec![0x7c, 0x85, 0xaa, 0xbb, 0xcc],
+            vec![0x7c, 0x45, 0xdd, 0xee],
+        ];
+
+        let nal = reconstruct_fu_a_payloads(&fu_a_payloads);
+
+        assert_eq!(nal, vec![0x65, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]);
     }
 }
