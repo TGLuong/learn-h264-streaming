@@ -8,13 +8,16 @@ At the start of a new session, read these files before guiding the learner:
 
 - `LEARNING_PROGRESS.md`
 - `docs/superpowers/plans/2026-06-24-learn-camera-h264.md`
+- `docs/superpowers/specs/2026-06-27-openh264-yuv-encode-design.md`
 - `src/main.rs`
 
 ## Current Learning Goal
 
-The learner's current priority is to understand H.264 stream structure and H.264 over RTP packetization.
+The learner has shifted the current priority to learning how to encode raw YUV frames into an H.264 bitstream from Rust using OpenH264.
 
-Do not drift back into raw camera frame capture, RGB/YUV pixel format conversion, or native camera APIs unless the learner explicitly asks. Those topics are deferred until after the H.264/RTP path is clear.
+The active plan is `docs/superpowers/specs/2026-06-27-openh264-yuv-encode-design.md`.
+
+Start with synthetic YUV420P frames before real camera capture. Do not jump directly into native camera APIs, RGB/YUV conversion from real devices, or macOS AVFoundation/VideoToolbox unless the learner explicitly changes the plan.
 
 ## Current Progress
 
@@ -35,25 +38,30 @@ Completed:
 - Learning-oriented RTP packet model.
 - Single NAL RTP packetization.
 - FU-A packetization with tests for normal fragmentation and exact final chunk handling.
+- RTP packetization verification with a real `.h264` file.
+- Wireshark inspection of RTP/H.264 Single NAL and FU-A packets.
+- Receiver-side depacketization basics:
+  - Single NAL: `1 RTP -> 1 NAL`
+  - FU-A: `many RTP -> 1 NAL`
+  - STAP-A: `1 RTP -> many NAL`
 
 Current next stage:
 
-- Stage 8 Step 4: verify RTP packetization using a real `.h264` file.
+- OpenH264 YUV encoding milestone:
+  - Generate synthetic YUV420P frames in Rust.
+  - Encode them with the `openh264` crate.
+  - Write a raw `.h264` stream.
+  - Verify the result with the existing `inspect` command and media tools.
 
 Recommended next lesson:
 
-1. Read `src/rtp_packetization.rs`.
-2. Check whether the debug `println!("{packets:?}")` in the FU-A test is still present; recommend removing it if the learner asks for cleanup.
-3. Guide the learner to add an inspect/summary path that reads `captures/rust-camera-g30.h264`, extracts NAL units, packetizes the first few NAL units with MTU 1200, and prints concise summaries:
-
-```text
-NAL 0 type 7 SPS len 22 -> Single RTP packet seq=100
-NAL 1 type 8 PPS len 4 -> Single RTP packet seq=101
-NAL 2 type 6 SEI len 690 -> Single RTP packet seq=102
-NAL 3 type 5 IDR len 50350 -> FU-A packets seq=103..145
-```
-
-4. After this verification step, the next conceptual step is receiver-side depacketization/reconstruction.
+1. Read the OpenH264 YUV encode design spec.
+2. Add an implementation plan for the synthetic YUV milestone before writing code.
+3. Guide the learner through:
+   - YUV420P plane sizes.
+   - Creating synthetic Y, U, and V planes.
+   - Passing frames to OpenH264.
+   - Inspecting the produced `.h264` bitstream.
 
 ## Teaching Style
 
@@ -63,6 +71,7 @@ NAL 3 type 5 IDR len 50350 -> FU-A packets seq=103..145
 - Let the learner write code themselves when they ask to learn by coding.
 - Review their code instead of taking over, unless they explicitly ask for a fix.
 - When reviewing, lead with bugs or conceptual risks, then mention tests.
+- For this new OpenH264 section, keep theory short and prefer one concrete code exercise at a time.
 
 ## Useful Commands
 
@@ -88,6 +97,12 @@ Inspect H.264:
 
 ```bash
 cargo run -- inspect captures/rust-camera-g30.h264
+```
+
+Planned synthetic OpenH264 encode command:
+
+```bash
+cargo run -- encode-synthetic-h264 captures/openh264-test.h264
 ```
 
 Remux raw H.264 to MP4:
@@ -120,12 +135,22 @@ The learner currently understands:
 - FU indicator keeps F/NRI and sets type 28.
 - FU header stores Start/End flags and original NAL type.
 - Marker bit means the last RTP packet of an access unit/frame, not "this NAL fits in one packet".
+- Receiver depacketization reconstructs H.264 NAL units from RTP payloads.
+
+The learner is now moving from "inspect and packetize existing H.264" to "produce H.264 from raw YUV frames":
+
+```text
+synthetic YUV420P frames
+  -> OpenH264 encoder
+  -> raw .h264 bitstream
+  -> existing H.264 inspector
+```
 
 The next conceptual bridge is:
 
 ```text
-Annex B H.264 stream
-  -> full NAL unit byte ranges
-  -> RTP H.264 payloader summaries on real data
-  -> receiver-side depacketization/reconstruction
+YUV420P frame layout
+  -> encoder input frame
+  -> OpenH264 output bytes
+  -> Annex B / NAL inspection
 ```
