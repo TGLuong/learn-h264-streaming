@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct RtpPacket {
     pub sequence_number: u16,
@@ -6,6 +8,88 @@ pub struct RtpPacket {
     pub payload_type: u8,
     pub ssrc: u32,
     pub payload: Vec<u8>,
+}
+
+pub struct RtpDepacketizer {
+    rtp_queue: VecDeque<RtpPacket>,
+    nal_queue: VecDeque<Vec<u8>>,
+    curr_nal: Vec<u8>,
+}
+
+impl RtpDepacketizer {
+    pub fn new() -> Self {
+        Self {
+            rtp_queue: VecDeque::default(),
+            nal_queue: VecDeque::default(),
+            curr_nal: Vec::default(),
+        }
+    }
+
+    pub fn push_in(&mut self, packet: RtpPacket) {
+        self.rtp_queue.push_back(packet);
+        self.process();
+    }
+
+    pub fn pop_out(&mut self) -> Option<Vec<u8>> {
+        self.nal_queue.pop_front()
+    }
+
+    fn process(&mut self) {
+        while let Some(rtp) = self.rtp_queue.pop_front() {
+            if let Some(first_byte) = rtp.payload.get(0).copied() {
+                let rtp_type = first_byte & 0x1f;
+                match rtp_type {
+                    1..=23 => {
+                        // Single NAL Unit
+                        self.nal_queue.push_back(rtp.payload);
+                    }
+                    24 => {
+                        // STAP-A
+                        let mut index = 1;
+                        while index + 2 <= rtp.payload.len() {
+                            match rtp.payload.get(index..index + 2) {
+                                Some(size_bytes) => {
+                                    let size_bytes = [size_bytes[0], size_bytes[1]];
+                                    let size = u16::from_be_bytes(size_bytes) as usize;
+                                    index += 2;
+                                    if let Some(nal_packet) = rtp.payload.get(index..index + size) {
+                                        self.nal_queue.push_back(nal_packet.to_vec());
+                                    }
+                                    index += size;
+                                }
+                                None => index += 2,
+                            }
+                        }
+                    }
+                    28 => {
+                        // FU
+                        if let (Some(fu_indicator), Some(fu_header), Some(nal_payload)) =
+                            (rtp.payload.get(0), rtp.payload.get(1), rtp.payload.get(2..))
+                        {
+                            let fu_type = fu_indicator & 0x1f;
+                            let start = (fu_header & 0x80) >> 7;
+                            let end = (fu_header & 0x40) >> 6;
+
+                            println!("{fu_indicator:02x} {fu_header:02x} {fu_type} {start} {end}");
+                            if fu_type == 28 {
+                                let nal_header = (fu_indicator & 0xe0) | (fu_header & 0x1f);
+                                if start == 1 {
+                                    self.curr_nal.push(nal_header);
+                                }
+                                self.curr_nal.extend(nal_payload);
+                                if end == 1 {
+                                    let nal_packet = self.curr_nal.clone();
+                                    self.curr_nal.clear();
+                                    self.nal_queue.push_back(nal_packet);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 pub fn reconstruct_fu_a_payloads(payload: &Vec<Vec<u8>>) -> Vec<u8> {
@@ -226,6 +310,92 @@ mod test {
                 payload: vec![0x67, 0xaa, 0xbb],
             }]
         );
+    }
+
+    #[test]
+    fn depacketizer_outputs_single_nal_packet() {
+        let mut depacketizer = RtpDepacketizer::new();
+
+        depacketizer.push_in(RtpPacket {
+            sequence_number: 100,
+            timestamp: 3000,
+            marker: true,
+            payload_type: 96,
+            ssrc: 0x11223344,
+            payload: vec![0x67, 0xaa, 0xbb],
+        });
+
+        assert_eq!(depacketizer.pop_out(), Some(vec![0x67, 0xaa, 0xbb]));
+        assert_eq!(depacketizer.pop_out(), None);
+    }
+
+    #[test]
+    fn depacketizer_outputs_single_nals_and_reconstructed_fu_a_nal_in_order() {
+        let mut depacketizer = RtpDepacketizer::new();
+
+        depacketizer.push_in(RtpPacket {
+            sequence_number: 100,
+            timestamp: 3000,
+            marker: false,
+            payload_type: 96,
+            ssrc: 0x11223344,
+            payload: vec![0x67, 0xaa, 0xbb],
+        });
+        assert_eq!(depacketizer.pop_out(), Some(vec![0x67, 0xaa, 0xbb]));
+        assert_eq!(depacketizer.pop_out(), None);
+
+        depacketizer.push_in(RtpPacket {
+            sequence_number: 101,
+            timestamp: 3000,
+            marker: false,
+            payload_type: 96,
+            ssrc: 0x11223344,
+            payload: vec![0x7c, 0x85, 0x11, 0x22, 0x33],
+        });
+        assert_eq!(depacketizer.pop_out(), None);
+
+        depacketizer.push_in(RtpPacket {
+            sequence_number: 102,
+            timestamp: 3000,
+            marker: true,
+            payload_type: 96,
+            ssrc: 0x11223344,
+            payload: vec![0x7c, 0x45, 0x44, 0x55],
+        });
+        assert_eq!(
+            depacketizer.pop_out(),
+            Some(vec![0x65, 0x11, 0x22, 0x33, 0x44, 0x55])
+        );
+        assert_eq!(depacketizer.pop_out(), None);
+
+        depacketizer.push_in(RtpPacket {
+            sequence_number: 103,
+            timestamp: 6000,
+            marker: true,
+            payload_type: 96,
+            ssrc: 0x11223344,
+            payload: vec![0x68, 0xcc],
+        });
+        assert_eq!(depacketizer.pop_out(), Some(vec![0x68, 0xcc]));
+        assert_eq!(depacketizer.pop_out(), None);
+    }
+
+    #[test]
+    fn depacketizer_outputs_each_nal_from_stap_a_packet() {
+        let mut depacketizer = RtpDepacketizer::new();
+
+        depacketizer.push_in(RtpPacket {
+            sequence_number: 100,
+            timestamp: 3000,
+            marker: true,
+            payload_type: 96,
+            ssrc: 0x11223344,
+            payload: vec![0x78, 0x00, 0x03, 0x67, 0xaa, 0xbb, 0x00, 0x02, 0x68, 0xcc],
+        });
+
+        assert_eq!(depacketizer.pop_out(), Some(vec![0x67, 0xaa, 0xbb]));
+        assert_eq!(depacketizer.pop_out(), Some(vec![0x68, 0xcc]));
+        assert_eq!(depacketizer.pop_out(), None);
     }
 
     #[test]

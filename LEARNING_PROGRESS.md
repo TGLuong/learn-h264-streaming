@@ -10,7 +10,8 @@ Learn how to capture camera video, understand the H.264 bitstream structure, and
 
 - Can capture camera video to raw H.264 by launching FFmpeg from Rust.
 - Can inspect raw H.264 Annex B streams with a Rust inspector.
-- Current learning focus: understand H.264 stream structure and H.264 over RTP packetization before going deeper into raw camera frame capture.
+- Can packetize and depacketize learning-oriented H.264 RTP payloads in Rust.
+- Current learning focus: finish the H.264/RTP path before going deeper into raw camera frame capture.
 
 ## Learning Path Status
 
@@ -27,7 +28,7 @@ Learn how to capture camera video, understand the H.264 bitstream structure, and
 
 ## Next Session Prompt
 
-Continue with receiver-side RTP/H.264 depacketization. The learner has verified H.264 RTP packetization on a real `.h264` file, compared it with FFmpeg RTP output in Wireshark, and is ready to reconstruct FU-A RTP payloads back into the original NAL unit bytes.
+Continue from receiver-side RTP/H.264 depacketization. The learner implemented a learning-oriented `RtpDepacketizer` with `push_in` and `pop_out`, covering Single NAL packets, FU-A reconstruction, and STAP-A aggregation. Next useful step: clean up debug prints and signatures, then discuss receiver robustness such as invalid/truncated RTP payloads, missing FU-A fragments, sequence number gaps, and when marker/access-unit boundaries matter.
 
 ## Notes
 
@@ -134,12 +135,38 @@ Continue with receiver-side RTP/H.264 depacketization. The learner has verified 
 
 ## Current Next Step: Receiver-Side Depacketization
 
-- Next lesson: reconstruct FU-A RTP payloads back into the original H.264 NAL unit.
-- Start with a focused helper in `src/rtp_packetization.rs`:
-  - Input: multiple FU-A RTP payload byte slices belonging to the same NAL.
-  - Output: one reconstructed NAL unit byte vector.
-- Key reconstruction rule:
+- Implemented FU-A reconstruction back into the original H.264 NAL unit.
+- Key reconstruction rule learned:
   - `nal_header = (fu_indicator & 0xe0) | (fu_header & 0x1f)`
-- First target test:
-  - Input payloads: `[0x7c, 0x85, 0xaa, 0xbb, 0xcc]` and `[0x7c, 0x45, 0xdd, 0xee]`.
-  - Expected NAL: `[0x65, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]`.
+- Implemented a learning-oriented `RtpDepacketizer` with:
+  - `push_in(packet: RtpPacket)` to feed RTP packets into the receiver side.
+  - `pop_out() -> Option<Vec<u8>>` to retrieve one reconstructed/output NAL unit at a time.
+- Confirmed receiver-side payload shapes:
+  - Single NAL: `1 RTP -> 1 NAL`
+  - FU-A: `many RTP -> 1 NAL`
+  - STAP-A: `1 RTP -> many NAL`
+- Learned STAP-A structure:
+  - RTP payload type 24.
+  - First byte is STAP-A header.
+  - Each contained NAL is encoded as 2-byte big-endian length followed by NAL bytes.
+  - Example: `78 00 03 67 aa bb 00 02 68 cc` outputs `[67 aa bb]` and `[68 cc]`.
+- Added tests for:
+  - FU-A payload reconstruction helper.
+  - `RtpDepacketizer` outputting a Single NAL packet.
+  - Mixed Single NAL and FU-A packets in order.
+  - STAP-A outputting each aggregated NAL.
+- Latest verification:
+  - `cargo test` passes with 17 tests.
+- Cleanup opportunities:
+  - Remove debug `println!` calls from FU-A/depacketizer paths.
+  - Consider changing `reconstruct_fu_a_payloads(payload: &Vec<Vec<u8>>)` to a slice-based signature.
+  - Consider validating malformed STAP-A payloads instead of silently ignoring truncated NAL data.
+
+## Next Conceptual Step: RTP Receiver Robustness
+
+- Decide how the depacketizer should behave for malformed or incomplete RTP/H.264 payloads.
+- Useful next exercises:
+  - Add a test for truncated STAP-A length fields.
+  - Add a test for a FU-A end fragment arriving without a start fragment.
+  - Add simple sequence-number gap detection for fragmented FU-A NALs.
+  - Discuss marker bit and access-unit/frame boundary handling again, now from the receiver side.
