@@ -1,6 +1,6 @@
 # Learning Progress: Camera Capture to H.264
 
-Last updated: 2026-06-26
+Last updated: 2026-06-27
 
 ## Goal
 
@@ -21,13 +21,13 @@ Learn how to capture camera video, understand the H.264 bitstream structure, and
 - [x] Stage 5: Understand raw H.264 stream vs MP4 container and Annex B vs AVCC.
 - [x] Stage 6: Learn H.264 over RTP packetization.
 - [x] Stage 7: Implement simple H.264 NAL unit extraction for RTP payloading.
-- [ ] Stage 8: Implement RTP packetization for Single NAL and FU-A.
+- [x] Stage 8: Implement RTP packetization for Single NAL and FU-A.
 - [ ] Stage 9: Learn low-latency streaming considerations.
 - [ ] Stage 10: Optional capture/encoding internals: raw frames, pixel formats, and native macOS APIs.
 
 ## Next Session Prompt
 
-Continue from Stage 8 Step 4 in `docs/superpowers/plans/2026-06-24-learn-camera-h264.md`. The learner has implemented Annex B NAL extraction, Single NAL RTP packetization, and FU-A fragmentation. Next, guide them to verify packetization on the real `captures/rust-camera-g30.h264` file by printing concise per-NAL RTP summaries.
+Continue with receiver-side RTP/H.264 depacketization. The learner has verified H.264 RTP packetization on a real `.h264` file, compared it with FFmpeg RTP output in Wireshark, and is ready to reconstruct FU-A RTP payloads back into the original NAL unit bytes.
 
 ## Notes
 
@@ -105,6 +105,41 @@ Continue from Stage 8 Step 4 in `docs/superpowers/plans/2026-06-24-learn-camera-
   - Single NAL RTP packetization.
   - FU-A fragmentation.
   - Exact final FU-A chunk handling.
-- Current next step: verify RTP packetization on a real `.h264` file by printing concise summaries such as:
-  - `NAL 0 type 7 SPS len 22 -> Single RTP packet seq=100`
-  - `NAL 3 type 5 IDR len 50350 -> FU-A packets seq=103..145`
+- Added/used a `packetize` inspection path that reads a real `.h264` file, extracts NAL units, packetizes the first few NAL units with MTU 1200, and prints concise RTP summaries.
+- Verified output similar to:
+  - `NAL 0 type 7 SPS len 22 -> Single RTP packet seq = 0`
+  - `NAL 1 type 8 PPS len 4 -> Single RTP packet seq = 1`
+  - `NAL 2 type 6 SEI len 607 -> Single RTP packet seq = 2`
+  - `NAL 3 type 5 IDR slice len 2546 -> FU-A packets seq=3..5`
+  - `NAL 4 type 5 IDR slice len 1673 -> FU-A packets seq=6..7`
+- Confirmed the sequence number behavior: each RTP packet increments sequence by 1; a fragmented NAL consumes multiple sequence numbers.
+- Noted a small formatting cleanup opportunity in the summary output: avoid printing `IDR slice slice`.
+- Used FFmpeg to send the raw `.h264` as RTP to `127.0.0.1:5004` and captured it with Wireshark on macOS loopback interface `lo0`.
+- Solved Wireshark permission issue by recognizing it as a macOS capture permission/ChmodBPF problem, not an RTP problem.
+- Learned how to decode the UDP stream as RTP/H.264 in Wireshark and inspect:
+  - RTP sequence number.
+  - RTP marker bit.
+  - H.264 Single NAL vs FU-A payload.
+  - FU-A Start and End bits.
+  - Original NAL type carried in the FU header.
+- Observed a real Wireshark FU-A packet for an IDR slice:
+  - FU indicator type 28 means FU-A.
+  - Start bit 1 and End bit 0 means the first fragment.
+  - Original NAL type 5 means IDR slice.
+- Understood why FFmpeg may split the same IDR NAL into fewer RTP packets than the Rust prototype: FFmpeg used a larger effective RTP payload size, while the Rust code used MTU 1200.
+- Clarified marker bit meaning:
+  - Marker bit marks the last RTP packet of an access unit/frame.
+  - It does not simply mean "last packet of this NAL" unless that NAL is also the final NAL of the frame.
+  - Exact frame/access-unit boundary detection requires more H.264 slice-header parsing or using encoder/container boundaries.
+
+## Current Next Step: Receiver-Side Depacketization
+
+- Next lesson: reconstruct FU-A RTP payloads back into the original H.264 NAL unit.
+- Start with a focused helper in `src/rtp_packetization.rs`:
+  - Input: multiple FU-A RTP payload byte slices belonging to the same NAL.
+  - Output: one reconstructed NAL unit byte vector.
+- Key reconstruction rule:
+  - `nal_header = (fu_indicator & 0xe0) | (fu_header & 0x1f)`
+- First target test:
+  - Input payloads: `[0x7c, 0x85, 0xaa, 0xbb, 0xcc]` and `[0x7c, 0x45, 0xdd, 0xee]`.
+  - Expected NAL: `[0x65, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]`.

@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use crate::rtp_packetization::find_nal_units_annex_b;
+use crate::rtp_packetization::{find_nal_units_annex_b, packetize_nal_as_rtp};
 
 pub mod rtp_packetization;
 
@@ -45,7 +45,35 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
 fn packetize(input_path: &Path) -> Result<(), Box<dyn Error>> {
     let bytes = fs::read(input_path)?;
     let packets = find_nal_units_annex_b(&bytes);
-    println!("{packets:?}");
+    let mut sequence_number = 0;
+    if let Some(packets) = packets.get(0..5) {
+        for (index, packet) in packets.iter().enumerate() {
+            let nal_header = packet[0];
+            let nal_type = nal_header & 0x1f;
+            let nal_name = nal_type_name(nal_type);
+            let rtp_packets =
+                packetize_nal_as_rtp(*packet, 1200, sequence_number, 10000, 96, 0, false);
+            if rtp_packets.len() == 1 {
+                let rtp = rtp_packets.get(0).unwrap();
+                println!(
+                    "NAL {index} type {nal_type} {nal_name} len {} -> Single RTP packet seq = {}",
+                    packet.len(),
+                    rtp.sequence_number,
+                );
+                sequence_number = rtp.sequence_number + 1;
+            } else if rtp_packets.len() > 1 {
+                let first_rtp = rtp_packets.first().unwrap();
+                let last_rtp = rtp_packets.last().unwrap();
+                println!(
+                    "NAL {index} type {nal_type} {nal_name} slice len {} -> FU-A packets seq={}..{}",
+                    packet.len(),
+                    first_rtp.sequence_number,
+                    last_rtp.sequence_number
+                );
+                sequence_number = last_rtp.sequence_number + 1;
+            }
+        }
+    }
     Ok(())
 }
 
