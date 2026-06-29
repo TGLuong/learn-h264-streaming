@@ -44,24 +44,35 @@ Completed:
   - Single NAL: `1 RTP -> 1 NAL`
   - FU-A: `many RTP -> 1 NAL`
   - STAP-A: `1 RTP -> many NAL`
+- OpenH264 synthetic YUV encoding:
+  - Generated YUV420P frames in Rust.
+  - Encoded synthetic YUV frames with `openh264`.
+  - Wrote `captures/openh264-test.h264`.
+  - Verified the output with the existing Annex B/NAL inspector.
+  - Learned stride vs width for planar YUV input.
+  - Configured periodic IDR/keyframes with `IntraFramePeriod::from_num_frames(30)`.
 
 Current next stage:
 
 - OpenH264 YUV encoding milestone:
-  - Generate synthetic YUV420P frames in Rust.
-  - Encode them with the `openh264` crate.
-  - Write a raw `.h264` stream.
-  - Verify the result with the existing `inspect` command and media tools.
+  - Parameterize width, height, frame count, and intra period instead of hard-coding them.
+  - Add a test that counts IDR NAL units using `find_nal_units_annex_b`.
+  - Then bridge from synthetic frames to a real captured YUV frame source.
 
 Recommended next lesson:
 
 1. Read the OpenH264 YUV encode design spec.
-2. Add an implementation plan for the synthetic YUV milestone before writing code.
-3. Guide the learner through:
-   - YUV420P plane sizes.
-   - Creating synthetic Y, U, and V planes.
-   - Passing frames to OpenH264.
-   - Inspecting the produced `.h264` bitstream.
+2. Read `src/h264_encode.rs` and review the learner's latest code.
+3. Guide the learner to parameterize:
+   - `width`
+   - `height`
+   - `frame_count`
+   - `intra_period`
+4. Add/review a test like:
+   - encode 90 frames with intra period 30.
+   - extract NAL units with `find_nal_units_annex_b`.
+   - count type 5 IDR NAL units.
+   - assert there are multiple IDR frames.
 
 ## Teaching Style
 
@@ -136,8 +147,14 @@ The learner currently understands:
 - FU header stores Start/End flags and original NAL type.
 - Marker bit means the last RTP packet of an access unit/frame, not "this NAL fits in one packet".
 - Receiver depacketization reconstructs H.264 NAL units from RTP payloads.
+- YUV420P uses separate Y, U, and V planes.
+- For no-padding synthetic YUV420P, strides are `(width, width / 2, width / 2)`.
+- `YUVSlices::new` can wrap existing Y/U/V buffers for OpenH264 input.
+- `Encoder::new()` uses default OpenH264 config and does not create periodic keyframes by default.
+- In `openh264 0.9.3`, use `Encoder::with_api_config(OpenH264API::from_source(), config)` to apply custom encoder config.
+- `IntraFramePeriod::from_num_frames(30)` creates periodic intra/keyframes roughly every 30 frames.
 
-The learner is now moving from "inspect and packetize existing H.264" to "produce H.264 from raw YUV frames":
+The learner is now moving from "produce H.264 from synthetic YUV frames" to "make the encoder path configurable and ready for real YUV frame input":
 
 ```text
 synthetic YUV420P frames
@@ -153,4 +170,6 @@ YUV420P frame layout
   -> encoder input frame
   -> OpenH264 output bytes
   -> Annex B / NAL inspection
+  -> configurable keyframe interval
+  -> real captured YUV frames
 ```

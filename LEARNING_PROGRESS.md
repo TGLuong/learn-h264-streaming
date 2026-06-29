@@ -11,7 +11,8 @@ Learn how to capture camera video, understand the H.264 bitstream structure, and
 - Can capture camera video to raw H.264 by launching FFmpeg from Rust.
 - Can inspect raw H.264 Annex B streams with a Rust inspector.
 - Can packetize and depacketize learning-oriented H.264 RTP payloads in Rust.
-- Current learning focus: finish the H.264/RTP path before going deeper into raw camera frame capture.
+- Can generate synthetic YUV420P frames and encode them into a raw H.264 bitstream with OpenH264.
+- Current learning focus: understand `YUV420P frame -> OpenH264 encoder -> H.264 bitstream`, then connect a real camera/raw YUV frame source later.
 
 ## Learning Path Status
 
@@ -23,12 +24,20 @@ Learn how to capture camera video, understand the H.264 bitstream structure, and
 - [x] Stage 6: Learn H.264 over RTP packetization.
 - [x] Stage 7: Implement simple H.264 NAL unit extraction for RTP payloading.
 - [x] Stage 8: Implement RTP packetization for Single NAL and FU-A.
+- [x] OpenH264 Stage 1: Generate synthetic YUV420P frames.
+- [x] OpenH264 Stage 2: Encode synthetic YUV420P frames into raw `.h264`.
+- [x] OpenH264 Stage 3: Verify OpenH264 output with the existing Annex B/NAL inspector.
+- [x] OpenH264 Stage 4: Configure periodic intra/keyframe generation with `IntraFramePeriod`.
+- [ ] OpenH264 Stage 5: Parameterize and clean up synthetic encoder settings.
+- [ ] OpenH264 Stage 6: Feed real captured YUV frames into the same OpenH264 path.
 - [ ] Stage 9: Learn low-latency streaming considerations.
 - [ ] Stage 10: Optional capture/encoding internals: raw frames, pixel formats, and native macOS APIs.
 
 ## Next Session Prompt
 
-Continue from receiver-side RTP/H.264 depacketization. The learner implemented a learning-oriented `RtpDepacketizer` with `push_in` and `pop_out`, covering Single NAL packets, FU-A reconstruction, and STAP-A aggregation. Next useful step: clean up debug prints and signatures, then discuss receiver robustness such as invalid/truncated RTP payloads, missing FU-A fragments, sequence number gaps, and when marker/access-unit boundaries matter.
+Continue from the OpenH264 synthetic YUV encoder path. The learner wants to code themselves and use the assistant as a guide/reviewer. They have added `openh264 = "0.9.3"`, created `src/h264_encode.rs`, generated synthetic YUV420P frames, encoded them with OpenH264, wrote `captures/openh264-test.h264`, inspected the output with the existing `inspect` command, and confirmed periodic keyframes by configuring `IntraFramePeriod::from_num_frames(30)` via `Encoder::with_api_config(OpenH264API::from_source(), config)`.
+
+Next useful step: avoid hard-coded encoder settings by parameterizing `encode_synthetic_h264_bytes(width, height, frame_count, intra_period)`, then add a test that uses `find_nal_units_annex_b` to confirm a periodic intra period produces multiple IDR NAL units. After that, update the CLI/file path to use those settings intentionally and discuss the bridge from synthetic frames to real captured YUV frames.
 
 ## Notes
 
@@ -36,7 +45,7 @@ Continue from receiver-side RTP/H.264 depacketization. The learner implemented a
 - Preferred style: step-by-step, hands-on, with short theory before each exercise.
 - Target platform right now: macOS, based on the current workspace environment.
 - Main objective: understand the concepts first, then implement a Rust prototype.
-- Current priority: understand H.264 stream structure and RTP packetization. Raw frame capture and pixel conversion are deferred until after the H.264/RTP path is clear.
+- Current priority: learn raw YUV frame encoding with OpenH264 before moving to real camera YUV capture.
 
 ## Notes From Stage 1
 
@@ -170,3 +179,42 @@ Continue from receiver-side RTP/H.264 depacketization. The learner implemented a
   - Add a test for a FU-A end fragment arriving without a start fragment.
   - Add simple sequence-number gap detection for fragmented FU-A NALs.
   - Discuss marker bit and access-unit/frame boundary handling again, now from the receiver side.
+
+## Notes From OpenH264 Synthetic YUV Encoding
+
+- Shifted learning goal from RTP receiver robustness to encoding raw YUV frames into H.264 using OpenH264.
+- Added/used design spec:
+  - `docs/superpowers/specs/2026-06-27-openh264-yuv-encode-design.md`
+- Added dependency:
+  - `openh264 = "0.9.3"`
+- Created `src/h264_encode.rs` with a learning-oriented `SyntheticYuvFrame`.
+- Learned YUV420P plane sizes:
+  - Y plane: `width * height`
+  - U plane: `(width / 2) * (height / 2)`
+  - V plane: `(width / 2) * (height / 2)`
+- Learned that U/V value `128` is neutral chroma, so changing only Y creates grayscale brightness changes.
+- Learned stride meaning:
+  - Width is the meaningful pixel count per row.
+  - Stride is the byte distance in memory from the start of one row to the start of the next row.
+  - For the current no-padding synthetic YUV420P frames: `(y_stride, u_stride, v_stride) = (width, width / 2, width / 2)`.
+- Used `openh264::formats::YUVSlices::new` to wrap existing Y, U, and V buffers without needing a camera source yet.
+- Encoded one synthetic YUV frame and verified output bytes contain Annex B start codes.
+- Encoded multiple synthetic frames and wrote raw H.264 bytes to `captures/openh264-test.h264`.
+- Added CLI command:
+  - `cargo run -- encode-synthetic-h264 captures/openh264-test.h264`
+- Verified OpenH264 output with:
+  - `cargo run -- inspect captures/openh264-test.h264`
+- Observed valid H.264 output with SPS, PPS, IDR slice, and non-IDR slices.
+- For a 6000-frame synthetic stream with default `Encoder::new()`, observed only one IDR at the beginning:
+  - SPS: 1
+  - PPS: 1
+  - IDR slice: 1
+  - non-IDR slice: 5999
+- Learned that OpenH264's default `EncoderConfig::new()` has `intra_frame_period` set to `IntraFramePeriod::from_num_frames(0)`, which disables periodic intra frames.
+- Configured periodic keyframes with:
+  - `EncoderConfig::new().intra_frame_period(IntraFramePeriod::from_num_frames(30))`
+  - `Encoder::with_api_config(OpenH264API::from_source(), config)`
+- Confirmed that setting an intra period creates many more IDR/keyframes.
+- Current cleanup/next coding task:
+  - Parameterize width, height, frame count, and intra period instead of hard-coding them.
+  - Add a test that encodes about 90 frames with intra period 30 and counts IDR NAL units using `find_nal_units_annex_b`.

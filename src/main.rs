@@ -7,6 +7,7 @@ use std::process::{Command, ExitCode};
 
 use crate::rtp_packetization::{find_nal_units_annex_b, packetize_nal_as_rtp};
 
+pub mod h264_encode;
 pub mod rtp_packetization;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -14,6 +15,7 @@ enum CliCommand {
     CaptureH264 { output_path: PathBuf },
     Inspect { input_path: PathBuf },
     Packetize { input_path: PathBuf },
+    EncodeSyntheticH264 { output_path: PathBuf },
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -39,6 +41,9 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
         CliCommand::CaptureH264 { output_path } => capture_h264(&output_path),
         CliCommand::Inspect { input_path } => inspect_h264(&input_path),
         CliCommand::Packetize { input_path } => packetize(&input_path),
+        CliCommand::EncodeSyntheticH264 { output_path } => {
+            h264_encode::encode_synthetic_h264_file(&output_path)
+        }
     }
 }
 
@@ -87,6 +92,9 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, String> {
         }),
         [_, command, input_path] if command == "packetize" => Ok(CliCommand::Packetize {
               input_path: input_path.into(),
+        }),
+        [_, command, output_path] if command == "encode-synthetic-h264" => Ok(CliCommand::EncodeSyntheticH264 {
+              output_path: output_path.into(),
         }),
         [program, ..] => Err(format!(
             "Usage: {program} capture-h264 <output-path>\nExample: {program} capture-h264 captures/rust-camera.h264"
@@ -352,6 +360,24 @@ fn find_nal_headers(bytes: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_encode_synthetic_h264_command() {
+        let args = vec![
+            "video-capture".to_string(),
+            "encode-synthetic-h264".to_string(),
+            "captures/openh264-test.h264".to_string(),
+        ];
+
+        let command = parse_cli(args).expect("command should parse");
+
+        assert_eq!(
+            command,
+            CliCommand::EncodeSyntheticH264 {
+                output_path: "captures/openh264-test.h264".into(),
+            }
+        );
+    }
 
     #[test]
     fn summarizes_gops_from_idr_clusters() {
