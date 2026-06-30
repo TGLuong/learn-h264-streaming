@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 openh264 = "0.9.3"
+nokhwa = { version = "0.10.11", features = ["input-native"] }
+tokio = { version = "1.52.3", features = ["full"] }
+bytes = "1.12.0"
+rtp = "0.17.1"

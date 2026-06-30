@@ -5,8 +5,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use crate::capture::capture_frame_info;
 use crate::rtp_packetization::{find_nal_units_annex_b, packetize_nal_as_rtp};
 
+pub mod capture;
 pub mod h264_encode;
 pub mod rtp_packetization;
 
@@ -16,6 +18,7 @@ enum CliCommand {
     Inspect { input_path: PathBuf },
     Packetize { input_path: PathBuf },
     EncodeSyntheticH264 { output_path: PathBuf },
+    CaptureFrameInfo,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -26,8 +29,9 @@ pub struct GopSummary {
     non_idr_slices: usize,
 }
 
-fn main() -> ExitCode {
-    match run(env::args().collect()) {
+#[tokio::main]
+async fn main() -> ExitCode {
+    match run(env::args().collect()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -36,7 +40,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
+async fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
     match parse_cli(args)? {
         CliCommand::CaptureH264 { output_path } => capture_h264(&output_path),
         CliCommand::Inspect { input_path } => inspect_h264(&input_path),
@@ -44,6 +48,7 @@ fn run(args: Vec<String>) -> Result<(), Box<dyn Error>> {
         CliCommand::EncodeSyntheticH264 { output_path } => {
             h264_encode::encode_synthetic_h264_file(&output_path)
         }
+        CliCommand::CaptureFrameInfo => capture_frame_info().await,
     }
 }
 
@@ -96,6 +101,7 @@ fn parse_cli(args: Vec<String>) -> Result<CliCommand, String> {
         [_, command, output_path] if command == "encode-synthetic-h264" => Ok(CliCommand::EncodeSyntheticH264 {
               output_path: output_path.into(),
         }),
+        [_, command] if command == "capture-frame-info" => Ok(CliCommand::CaptureFrameInfo),
         [program, ..] => Err(format!(
             "Usage: {program} capture-h264 <output-path>\nExample: {program} capture-h264 captures/rust-camera.h264"
         )),
